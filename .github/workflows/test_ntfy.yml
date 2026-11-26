@@ -1,0 +1,13 @@
+name: Test Ntfy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  send-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send test alert to ntfy
+        run: |
+          curl -s -d "Macro Catalyst Engine online (GitHub Actions test)" \
+            https://ntfy.sh/macro_radar_muhammad_7721
