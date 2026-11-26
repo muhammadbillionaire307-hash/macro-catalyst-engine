@@ -1,643 +1,80 @@
-#!/usr/bin/env python3
-"""Macro Catalyst Radar: нарх + хабар + тарҷумаи пурраи тоҷикӣ + хулосаи эҳтимолӣ барои ҳар актив (бе сигнал).
-Занҷир: Gemini (агар калид бошад) → Google MT (бе калид) → қоидавӣ.
-Истилоҳоти молиявӣ бо placeholder муҳофизат мешаванд, то MT онҳоро вайрон накунад."""
-
-import hashlib
-import html
-import json
-import os
-import re
-import sys
-import time
-import urllib.parse
-import urllib.request
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
-
-# ==============================================================================
-# ҚИСМИ 1: ТАНЗИМОТ ВА МОДУЛИ ТАРҶУМА (аз translate_tg.py)
-# ==============================================================================
-
-CYR = re.compile(r"[А-Яа-яЁёҒғӢӣҚқҲҳҶҷӮӯ]")
-LAT_WORD = re.compile(r"[A-Za-z][A-Za-z'’-]{2,}")
-ALLOWED_LATIN = {
-    "XAUUSD", "NAS100", "SPX500", "Nasdaq", "VIX", "DXY", "CPI", "PCE", "NFP", "GDP",
-    "Dow", "Jones", "Brent", "WTI", "OPEC", "FTSE", "DAX", "ETF", "AI", "Nvidia",
-    "Apple", "Microsoft", "Amazon", "Meta", "Tesla", "Alphabet", "Bitcoin",
-}
-
-# (regex, тоҷикӣ) — барои муҳофизат аз MT ва барои режими қоидавӣ
-PROTECT = [
-    (r"\bfederal\s+reserve\b|\bthe\s+fed\b|\bfed\b|\bfomc\b", "ФРС"),
-    (r"\bpowell\b", "Пауэлл"),
-    (r"\btrump\b", "Трамп"),
-    (r"\blagarde\b", "Лагард"),
-    (r"\bs&p\s*500\b|\bspx500\b", "S&P 500"),
-    (r"\bnasdaq(?:\s*100)?\b|\bnas100\b", "Nasdaq"),
-    (r"\bdow\s+jones\b", "Dow Jones"),
-    (r"\bxauusd\b", "XAUUSD"),
-    (r"\bdxy\b|\bdollar\s+index\b", "индекси доллар (DXY)"),
-    (r"\bcpi\b", "индекси нархҳои истеъмолӣ (CPI)"),
-    (r"\bpce\b", "PCE"),
-    (r"\bnfp\b|\bnonfarm\s+payrolls?\b", "омори шуғл (NFP)"),
-    (r"\bgdp\b", "ММД (GDP)"),
-    (r"\bopec\+?\b", "ОПЕК"),
-    (r"\becb\b", "Бонки марказии Аврупо"),
-    (r"\bboe\b", "Бонки Англия"),
-    (r"\bboj\b", "Бонки Ҷопон"),
-    (r"\btreasury\s+yields?\b", "даромадии вомбаргҳои хазинавӣ"),
-]
-PROTECT_C = [(re.compile(p, re.I), t) for p, t in PROTECT]
-
-PATTERNS = [
-    (r"\b(.+?)\s+end(?:s|ed)?\s+higher\s+as\s+(.+)", r"\1 дар поёни савдо боло рафт, зеро \2"),
-    (r"\b(.+?)\s+end(?:s|ed)?\s+lower\s+as\s+(.+)", r"\1 дар поёни савдо поин рафт, зеро \2"),
-    (r"\b(.+?)\s+higher\s+at\s+close\s+of\s+trade\b", r"\1 ҳангоми басташавии савдо боло рафт"),
-    (r"\b(.+?)\s+lower\s+at\s+close\s+of\s+trade\b", r"\1 ҳангоми басташавии савдо поин рафт"),
-    (r"\b(.+?)\s+urges?\s+(.+?)\s+to\s+crack\s+down\s+on\s+(.+)", r"\1 аз \2 даъват кард, ки бар зидди \3 чораҳои қатъӣ бинад"),
-    (r"\b(.+?)\s+urges?\s+(.+?)\s+to\s+(.+)", r"\1 аз \2 даъват кард, ки \3"),
-    (
-        r"\bwrestle\s+over\s+(.+?),\s*(.+?),\s*as\s+(.+?)\s+focuses\s+minds\b",
-        r"баҳсҳо бар сари \1 ва \2 идома доранд, дар ҳоле ки \3 таваҷҷуҳро ба худ ҷалб кардааст",
-    ),
-    (r"\bwrestle\s+over\s+(.+)", r"баҳсҳои шадид бар сари \1 идома доранд"),
-    (
-        r"\b(.+?)\s+(?:rises?|rose|gains?|gained|jumps?|jumped|surges?|surged|climbs?|climbed|rallies|rallied)\s+(.+?)\s+as\s+(.+)",
-        r"\1 \2 боло рафт, дар ҳоле ки \3",
-    ),
-    (
-        r"\b(.+?)\s+(?:falls?|fell|drops?|dropped|slides?|slid|slumps?|slumped|tumbles?|tumbled|sinks?|sank)\s+(.+?)\s+as\s+(.+)",
-        r"\1 \2 поин рафт, дар ҳоле ки \3",
-    ),
-    (r"\b(.+?)\s+(?:rises?|rose|gains?|gained|jumps?|jumped|surges?|surged|climbs?|climbed)\s+(.+)", r"\1 \2 боло рафт"),
-    (r"\b(.+?)\s+(?:falls?|fell|drops?|dropped|slides?|slid|slumps?|slumped|tumbles?|tumbled)\s+(.+)", r"\1 \2 поин рафт"),
-    (r"\bsupreme\s+leader\b", r"раҳбари олӣ"),
-    (r"\bthanksgiving\s+lull\b", r"оромии рӯзи Шукргузорӣ"),
-]
-PATTERNS_C = [(re.compile(p, re.I), r) for p, r in PATTERNS]
-
-WORDS = [
-    (r"\bu\.?k\.?\b|\bbritain\b|\bbritish\b", "Бритониё"),
-    (r"\bu\.?s\.?a?\.?\b|\bunited\s+states\b|\bamerica\b|\bamerican\b", "ИМА"),
-    (r"\beuropean\s+stocks\b", "саҳмияҳои аврупоӣ"),
-    (r"\beuropean\b|\beu\b|\beurope\b", "Аврупо"),
-    (r"\beurozone\b", "минтақаи евро"),
-    (r"\bmexico\b", "Мексика"),
-    (r"\bcanada\b", "Канада"),
-    (r"\bjapan(?:ese)?\b", "Ҷопон"),
-    (r"\bchina\b|\bchinese\b", "Чин"),
-    (r"\bindia\b", "Ҳинд"),
-    (r"\biran(?:ian)?\b", "Эрон"),
-    (r"\bisrael(?:i)?\b", "Исроил"),
-    (r"\brussia(?:n)?\b", "Русия"),
-    (r"\bukrain(?:e|ian)\b", "Украина"),
-    (r"\bgaza\b", "Ғазза"),
-    (r"\bmiddle\s+east\b", "Шарқи Наздик"),
-    (r"\btariffs?\b", "тарифҳо"),
-    (r"\bsanctions?\b", "таҳримҳо"),
-    (r"\bbudget\b", "буҷет"),
-    (r"\bcentral\s+bank(?:s)?\b", "бонки марказӣ"),
-    (r"\brate\s+cuts?\b", "коҳиши фоизҳо"),
-    (r"\brate\s+hikes?\b", "баландбардории фоизҳо"),
-    (r"\binterest\s+rates?\b|\brates?\b", "фоизҳои баҳра"),
-    (r"\binflation\b", "таваррум"),
-    (r"\bunemployment\b", "бекорӣ"),
-    (r"\bjobs?\b", "ҷойҳои корӣ"),
-    (r"\brecession\b", "рукуди иқтисодӣ"),
-    (r"\btreasur(?:y|ies)\b", "вомбаргҳои хазинавӣ"),
-    (r"\byields?\b", "даромадӣ"),
-    (r"\bdollar\b", "доллар"),
-    (r"\bgold\b|\bxau\b", "тилло"),
-    (r"\bsilver\b", "нуқра"),
-    (r"\bstocks?\b|\bequities\b|\bshares\b", "саҳмияҳо"),
-    (r"\boil\b|\bcrude\b", "нафт"),
-    (r"\bwar\b", "ҷанг"),
-    (r"\bgeopolitical\b", "геосиёсӣ"),
-    (r"\bceasefire\b", "оташбас"),
-    (r"\btrade\b", "тиҷорат"),
-    (r"\bmarkets?\b", "бозор"),
-    (r"\binvestors?\b", "сармоягузорон"),
-    (r"\btraders?\b", "савдогарон"),
-    (r"\bearnings\b", "фоидаи ширкатҳо"),
-    (r"\bbonds?\b", "вомбаргҳо"),
-    (r"\bsignal(?:s|ed|ing)?\b", "ишора мекунад"),
-    (r"\bweigh(?:s|ed|ing)?\b", "баҳо медиҳанд"),
-    (r"\bdata\b", "маълумот"),
-    (r"\bcuts?\b", "коҳиш"),
-    (r"\bannounce(?:s|d)?\b", "эълон шуд"),
-    (r"\battacks?\b", "ҳамла"),
-    (r"\bmissiles?\b", "мушак"),
-    (r"\bescalat(?:e|es|ed|ing)\b", "авҷ мегирад"),
-    (r"\bcrack\s+down\b", "чораҳои қатъӣ мебинад"),
-    (r"\bdodging\b", "саркашӣ"),
-    (r"\bhikes?\b", "баландбардорӣ"),
-    (r"\bpause(?:s|d)?\b", "таваққуф"),
-    (r"\bexpect(?:s|ed)?\b", "интизор меравад"),
-    (r"\bforecasts?\b", "пешбинӣ"),
-    (r"\breports?\b", "гузориш"),
-    (r"\bgrowth\b", "рушд"),
-    (r"\bsales\b", "фурӯш"),
-    (r"\bfall(?:s|en)?\b|\bdrops?\b|\bslips?\b", "коҳиш меёбад"),
-    (r"\brises?\b|\bgains?\b|\bjumps?\b", "боло меравад"),
-    (r"\bwarns?\b", "ҳушдор медиҳад"),
-    (r"\bbacks?\b", "дастгирӣ мекунад"),
-    (r"\bplans?\b", "нақша"),
-    (r"\bdeal\b", "созишнома"),
-    (r"\btalks\b", "музокирот"),
-    (r"\bnew\b", "нав"),
-    (r"\bkey\b", "калидӣ"),
-    (r"\bhalt(?:s|ed)?\b", "қатъ шуд"),
-    (r"\bboost(?:s|ed)?\b", "тақвият медиҳад"),
-    (r"\bdemand\b", "талабот"),
-    (r"\bsupply\b", "арза"),
-    (r"\bconcerns?\b", "нигарониҳо"),
-    (r"\brisks?\b", "хатар"),
-    (r"\bgovernment\b", "ҳукумат"),
-    (r"\bpresident\b", "президент"),
-    (r"\bthe\b|\ba\b|\ban\b", ""),
-    (r"\bhigher\b", "болотар"),
-    (r"\blower\b", "поинтар"),
-    (r"\bhighs?\b", "авҷ"),
-    (r"\blows?\b", "нишебӣ"),
-    (r"\bpercent\b|\bpct\b", "фоиз"),
-    (r"\bbillion\b", "миллиард"),
-    (r"\bmillion\b", "миллион"),
-    (r"\bsaid\b|\bsays\b", "гуфт"),
-    (r"\bwill\b", "хоҳад"),
-    (r"\bafter\b", "пас аз"),
-    (r"\bamid\b", "дар шароити"),
-    (r"\band\b", "ва"),
-    (r"\bof\b", "аз"),
-    (r"\bin\b", "дар"),
-    (r"\bon\b", "бар"),
-    (r"\bto\b", "ба"),
-    (r"\bfor\b", "барои"),
-    (r"\bwith\b", "бо"),
-    (r"\bfrom\b", "аз"),
-    (r"\bas\b", "зеро"),
-]
-WORDS_C = [(re.compile(p, re.I), t) for p, t in WORDS]
-POSTFIX = [("Захираи федералӣ", "ФРС"), ("захираи федералӣ", "ФРС"), ("Захираи Федералӣ", "ФРС")]
-
-
-def cyr_ratio(s: str) -> float:
-    c, l = len(CYR.findall(s)), len(re.findall(r"[A-Za-z]", s))
-    return c / max(1, c + l)
-
-
-def english_leftovers(s: str) -> list:
-    return [w for w in LAT_WORD.findall(s) if w not in ALLOWED_LATIN]
-
-
-def _tidy(t: str) -> str:
-    t = re.sub(r"\s+([,.;:!?])", r"\1", t)
-    t = re.sub(r",\s*,+", ", ", t)
-    t = re.sub(r"\s+", " ", t).strip(" ,;-—")
-    return (t[0].upper() + t[1:]) if t else t
-
-
-def rule_translate(text: str) -> str:
-    t = re.sub(r"\s*[-—|]\s*(Investing\.com|Reuters|Bloomberg)\b.*$", "", text, flags=re.I)
-    t = re.sub(r"\b(\w+)['’]s\b", r"\1", t)
-    for rx, t_tj in PROTECT_C:
-        t = rx.sub(t_tj, t)
-    for rx, repl in PATTERNS_C:
-        if rx.search(t):
-            t = rx.sub(repl, t, count=1)
-            break
-    for rx, t_tj in WORDS_C:
-        t = rx.sub(t_tj, t)
-    return _tidy(t)
-
-
-def _protect(text: str):
-    mp, t = {}, re.sub(r"\b(\w+)['’]s\b", r"\1", text)
-    for rx, t_tj in PROTECT_C:
-        def sub(m, t_tj=t_tj):
-            k = f"XQ{len(mp)}X"
-            mp[k] = t_tj
-            return k
-        t = rx.sub(sub, t)
-    return t, mp
-
-
-def _gtx(text: str, timeout=15) -> str:
-    url = "https://translate.googleapis.com/translate_a/single?" + urllib.parse.urlencode(
-        {"client": "gtx", "sl": "en", "tl": "tg", "dt": "t", "q": text}
-    )
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        data = json.loads(r.read().decode("utf-8"))
-    return "".join(seg[0] for seg in data[0] if seg and seg[0])
-
-
-def mt_translate(text: str) -> str:
-    t, mp = _protect(text)
-    out = _gtx(t)
-    for k, v in mp.items():
-        if k not in out:
-            raise ValueError("placeholder lost")
-        out = out.replace(k, v)
-    for a, b in POSTFIX:
-        out = out.replace(a, b)
-    if cyr_ratio(out) < 0.6:
-        raise ValueError("not tajik")
-    return _tidy(out)
-
-
-GEM_URL = "https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={k}"
-
-
-def gemini_batch(texts: list, key: str, model="gemini-2.0-flash") -> list:
-    gloss = (
-        "Fed=ФРС; Powell=Пауэлл; Trump=Трамп; DXY=индекси доллар (DXY); "
-        "CPI=индекси нархҳои истеъмолӣ (CPI); NFP=омори шуғл (NFP); "
-        "Treasury yields=даромадии вомбаргҳои хазинавӣ; OPEC=ОПЕК; tariffs=тарифҳо; sanctions=таҳримҳо"
-    )
-    prompt = (
-        "Ту тарҷумони касбии хабарҳои молиявӣ ҳастӣ. Ҳар сарлавҳаи англисиро ба тоҷикии адабии равон "
-        "(хати кириллӣ) тарҷума кун: мантиқӣ, бе тарҷумаи ҳарф ба ҳарф, бо тартиби дурусти ҷумла. "
-        "Рақамҳо, фоизҳо ва тикерҳоро нагардон. Ҳеҷ калимаи англисии нолозим намонад. "
-        f"Луғат: {gloss}. Фақат массиви JSON-и сатрҳо бо ҳамон теъдод бидеҳ.\n"
-        + json.dumps(texts, ensure_ascii=False)
-    )
-    body = json.dumps(
-        {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
-        }
-    ).encode()
-    req = urllib.request.Request(GEM_URL.format(m=model, k=key), body, {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        data = json.load(r)
-    out = json.loads(data["candidates"][0]["content"]["parts"][0]["text"])
-    if not isinstance(out, list) or len(out) != len(texts) or not all(isinstance(x, str) and x for x in out):
-        raise ValueError("bad gemini schema")
-    return [_tidy(x) for x in out]
-
-
-class Translator:
-    def __init__(self, gemini_key: str | None = None, log=print):
-        self.key, self.log, self.engines = gemini_key, log, set()
-
-    def translate_many(self, texts: list) -> list:
-        res = [None] * len(texts)
-        if self.key and texts:
-            try:
-                g = gemini_batch(texts, self.key)
-                for i, x in enumerate(g):
-                    if cyr_ratio(x) >= 0.6:
-                        res[i] = x
-                        self.engines.add("Gemini")
-            except Exception as e:
-                self.log(f"gemini translate failed: {e}")
-        for i, t in enumerate(texts):
-            if res[i] is not None:
-                continue
-            try:
-                res[i] = mt_translate(t)
-                self.engines.add("Google MT")
-            except Exception as e:
-                self.log(f"mt failed: {e}")
-                r = rule_translate(t)
-                left = english_leftovers(r)
-                res[i] = r + (" ⚠(қисман)" if left else "")
-                self.engines.add("қоидавӣ ⚠")
-        return res
-
-    def label(self) -> str:
-        return " + ".join(sorted(self.engines)) or "—"
-
-
-# ==============================================================================
-# ҚИСМИ 2: МУҲАРРИКИ МАКРО-КАТАЛИЗАТОР ВА НАРХҲО (аз radar.py)
-# ==============================================================================
-
-STATE_FILE = "state/last_state.json"
-DRY_RUN = os.environ.get("DRY_RUN") == "1"
-MAX_NEWS_AGE_H = 8
-MAX_NEWS_SHOWN = 6
-NTFY_LIMIT = 3800  # байт (ҳадди ntfy 4096)
-
-CORE = {"XAUUSD": "GC=F", "NAS100": "NQ=F", "SPX500": "^GSPC"}
-MACRO = {"DXY": "DX-Y.NYB", "US10Y": "^TNX", "VIX": "^VIX"}
-ALL = {**CORE, **MACRO}
-THRESH = {"XAUUSD": 0.25, "NAS100": 0.30, "SPX500": 0.25, "DXY": 0.20, "US10Y": 1.0, "VIX": 3.0}  # % байни ду иҷро
-NAME_TJ = {"DXY": "Индекси доллар (DXY)", "US10Y": "Даромадии вомбаргҳои 10-солаи ИМА", "VIX": "Индекси тарс (VIX)"}
-
-X_HANDLES = ["FirstSquawk", "DeItaone", "Investingcom", "OilHeadlineNews", "financialjuice", "FaytuksNetwork"]
-X_BASES = ["https://nitter.net", "https://xcancel.com", "https://nitter.poast.org"]
-RSS = [
-    ("Investing Macro", "https://www.investing.com/rss/news_25.rss"),
-    ("Investing Commodities", "https://www.investing.com/rss/news_11.rss"),
-    ("Yahoo Finance", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC=F,NQ=F,^GSPC,DX-Y.NYB&region=US&lang=en-US"),
-]
-
-TOPICS = [
-    ("Сиёсати ФРС ва фоизҳо", ["fed", "powell", "fomc", "rate", "rates", "central bank", "ecb", "boe", "boj", "lagarde"]),
-    ("Таваррум ва бозори меҳнат", ["cpi", "pce", "ppi", "nfp", "payrolls", "jobs", "unemployment", "inflation", "gdp", "recession"]),
-    ("Тарифҳо ва тиҷорати ҷаҳонӣ", ["tariff", "tariffs", "trump", "trade", "china", "mexico", "import", "export"]),
-    ("Геосиёсат ва амният", ["war", "iran", "israel", "russia", "ukraine", "gaza", "geopolitical", "military", "missile", "ceasefire", "sanctions"]),
-    ("Доллар ва вомбаргҳо", ["treasury", "treasuries", "yield", "yields", "dollar", "dxy", "liquidity"]),
-    ("Тилло, нафт ва индексҳо", ["gold", "xau", "nasdaq", "s&p", "sp500", "oil", "crude", "opec", "stocks", "equities"]),
-]
-TOPIC_RX = [(n, re.compile(r"(?<![\w])(?:" + "|".join(re.escape(k) for k in kws) + r")(?![\w])", re.I)) for n, kws in TOPICS]
-
-# омил → коэффитсиент барои актив; SCALE = ҳаракати рӯзонаии % ки баробари 1.0 аст
-FACTORS = {
-    "XAUUSD": {"DXY": -0.7, "US10Y": -0.5, "VIX": +0.2},
-    "NAS100": {"US10Y": -0.5, "VIX": -0.6, "DXY": -0.1},
-    "SPX500": {"US10Y": -0.4, "VIX": -0.7, "DXY": -0.1},
-}
-SCALE = {"DXY": 0.5, "US10Y": 2.0, "VIX": 5.0}
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
-
-def log(*a):
-    print(*a, file=sys.stderr)
-
-
-def fetch_text(url, timeout=12, tries=2):
-    err = None
-    for i in range(tries):
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=HEADERS), timeout=timeout) as r:
-                return r.read().decode("utf-8", errors="ignore")
-        except Exception as e:
-            err = e
-            time.sleep(1.5 * (i + 1))
-    raise err
-
-
-def clean(raw):
-    t = html.unescape(re.sub(r"<[^>]+>", " ", raw or ""))
-    t = re.sub(r"https?://\S+", " ", t)
-    return re.sub(r"\s+", " ", t).strip()
-
-
-def parse_rss(xml_text, label):
-    out = []
-    try:
-        root = ET.fromstring(xml_text)
-    except Exception:
-        return out
-    for it in root.findall(".//item"):
-        title, desc = clean(it.findtext("title")), clean(it.findtext("description"))
-        text = title or desc
-        if desc and desc.lower() not in text.lower() and len(text) < 160:
-            text = f"{text}. {desc[:260]}"
-        if not text:
-            continue
-        pub = None
-        try:
-            pub = parsedate_to_datetime(it.findtext("pubDate") or "")
-            pub = pub.astimezone(timezone.utc) if pub.tzinfo else pub.replace(tzinfo=timezone.utc)
-        except Exception:
-            pass
-        guid = clean(it.findtext("guid")) or clean(it.findtext("link")) or title
-        out.append(
-            {
-                "id": hashlib.md5(f"{label}:{guid}:{text[:80]}".encode()).hexdigest()[:12],
-                "source": label,
-                "text": text[:420],
-                "pub": pub,
-            }
-        )
-    return out
-
-
-def tokens(t):
-    return set(re.findall(r"[a-z0-9&]{3,}", t.lower()))
-
-
-def near_dup(t, seen_tokens, th=0.7):
-    a = tokens(t)
-    return any(len(a & b) / max(1, len(a | b)) >= th for b in seen_tokens)
-
-
-def get_quote(label, ticker):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker)}?range=1d&interval=15m"
-    m = json.loads(fetch_text(url, 15))["chart"]["result"][0]["meta"]
-    cur, prev = m.get("regularMarketPrice"), m.get("chartPreviousClose") or m.get("previousClose")
-    if cur is None:
-        return None
-    cur, prev = float(cur), (float(prev) if prev else None)
-    if label == "US10Y" and cur > 20:  # ^TNX баъзан ×10 мешавад
-        cur, prev = cur / 10, (prev / 10 if prev else None)
-    return {"price": round(cur, 3), "prev_close": round(prev, 3) if prev else None}
-
-
-def classify(text):
-    return [n for n, rx in TOPIC_RX if rx.search(text)]
-
-
-def asset_view(asset, day):
-    contribs, score = [], 0.0
-    for f, coef in FACTORS[asset].items():
-        chg = day.get(f)
-        if chg is None:
-            continue
-        c = coef * max(-1.0, min(1.0, chg / SCALE[f]))
-        score += c
-        if abs(c) >= 0.1:
-            contribs.append((abs(c), f"{NAME_TJ[f]} {chg:+.2f}% → {'дастгирӣ барои' if c > 0 else 'фишор ба'} {asset}"))
-    contribs.sort(reverse=True)
-    mag = abs(score)
-    if mag < 0.25:
-        bias, strength = "бетараф ➡️", ""
-    else:
-        bias = "боло ⬆️" if score > 0 else "поин ⬇️"
-        strength = " (заиф)" if mag < 0.5 else " (миёна)" if mag < 0.8 else " (қавӣ)"
-    own = day.get(asset)
-    lines = [f"▪ {asset}" + (f": имрӯз {own:+.2f}%" if own is not None else "")]
-    lines += [f"  – {c[1]}" for c in contribs[:3]] or ["  – омили macro-и возеҳ нест"]
-    lines.append(f"  Самти эҳтимолии наздик: {bias}{strength}")
-    return "\n".join(lines)
-
-
-def to_chunks(body, limit=NTFY_LIMIT):
-    chunks, cur = [], ""
-    for sec in body.split("\n\n"):
-        cand = f"{cur}\n\n{sec}" if cur else sec
-        if len(cand.encode()) <= limit:
-            cur = cand
-            continue
-        if cur:
-            chunks.append(cur)
-        while len(sec.encode()) > limit:
-            sec = sec.encode()[:limit].decode("utf-8", "ignore")
-        cur = sec
-    if cur:
-        chunks.append(cur)
-    return chunks
-
-
-def send_ntfy(topic, title, body, priority):
-    chunks = to_chunks(body)
-    for i, ch in enumerate(chunks, 1):
-        t = title + (f" ({i}/{len(chunks)})" if len(chunks) > 1 else "")
-        if DRY_RUN or not topic:
-            print(f"--- [{t}] ---\n{ch}\n")
-            continue
-        req = urllib.request.Request(
-            f"https://ntfy.sh/{topic}",
-            data=ch.encode("utf-8"),
-            method="POST",
-            headers={"Title": t, "Priority": priority, "Tags": "chart_with_upwards_trend"},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=15) as r:
-                log("ntfy", r.status)
-        except Exception as e:
-            log("ntfy error:", e)
-
-
-def main():
-    os.makedirs("state", exist_ok=True)
-    first_run = not os.path.exists(STATE_FILE)
-    prev = {}
-    if not first_run:
-        try:
-            prev = json.load(open(STATE_FILE, encoding="utf-8"))
-        except Exception:
-            first_run, prev = True, {}
-    now = datetime.now(timezone.utc)
-    prev_prices, seen = prev.get("prices", {}), dict(prev.get("seen", {}))
-    seen = {k: v for k, v in seen.items() if now.timestamp() - v < 86400 * 2}
-    missing = []
-
-    # 1) Нархҳо
-    quotes, day, since_last, moves = {}, {}, {}, []
-    for label, tk in ALL.items():
-        try:
-            q = get_quote(label, tk)
-            if not q:
-                raise ValueError("no price")
-            quotes[label] = q
-            if q["prev_close"]:
-                day[label] = (q["price"] - q["prev_close"]) / abs(q["prev_close"]) * 100
-            p = prev_prices.get(label)
-            if isinstance(p, (int, float)) and p:
-                since_last[label] = (q["price"] - p) / abs(p) * 100
-                if abs(since_last[label]) >= THRESH[label]:
-                    moves.append(f"{label} {since_last[label]:+.2f}%")
-        except Exception as e:
-            missing.append(f"нарх:{label}")
-            log("quote fail", label, e)
-
-    # 2) Хабарҳо (X + RSS ҳамеша ҳарду)
-    collected, x_ok = [], []
-    for h in X_HANDLES:
-        for b in X_BASES:
-            try:
-                items = parse_rss(fetch_text(f"{b}/{h}/rss", 10, tries=1), f"@{h}")
-                if items:
-                    collected += items[:5]
-                    x_ok.append(h)
-                    break
-            except Exception:
-                continue
-    if not x_ok:
-        missing.append("X (nitter)")
-    for name, url in RSS:
-        try:
-            collected += parse_rss(fetch_text(url, 12), name)[:8]
-        except Exception:
-            missing.append(name)
-
-    cutoff = now - timedelta(hours=MAX_NEWS_AGE_H)
-    collected.sort(key=lambda e: e["pub"] or now, reverse=True)
-    fresh, seen_tok = [], []
-    for e in collected:
-        if e["id"] in seen or (e["pub"] and e["pub"] < cutoff):
-            continue
-        tp = classify(e["text"])
-        if not tp and not e["source"].startswith("@"):
-            continue
-        if near_dup(e["text"], seen_tok):
-            seen[e["id"]] = now.timestamp()
-            continue
-        seen_tok.append(tokens(e["text"]))
-        e["topics"] = tp
-        fresh.append(e)
-        seen[e["id"]] = now.timestamp()
-        if len(fresh) >= MAX_NEWS_SHOWN:
-            break
-
-    notify = first_run or bool(moves) or bool(fresh)
-    if notify:
-        # 3) Тарҷума
-        tr = Translator(os.environ.get("GEMINI_API_KEY") or None, log=log)
-        tj = tr.translate_many([e["text"] for e in fresh]) if fresh else []
-
-        topics = []
-        for e in fresh:
-            for t in e["topics"]:
-                if t not in topics:
-                    topics.append(t)
-
-        head = [f"Вақт: {now:%Y-%m-%d %H:%M} UTC"]
-        head.append(
-            "Ҳушдори ҳаракат: " + ", ".join(moves)
-            if moves
-            else ("Ҳолати аввалия" if first_run else "Навсозии макро ва катализаторҳо")
-        )
-        price_lines = ["Нархҳо:"]
-        for label in ALL:
-            q = quotes.get(label)
-            if not q:
-                price_lines.append(f"• {label}: дастрас нест")
-                continue
-            d, s = day.get(label), since_last.get(label)
-            price_lines.append(
-                f"• {label}: {q['price']}"
-                + (f" | рӯз {d:+.2f}%" if d is not None else "")
-                + (f" | аз санҷиши охир {s:+.2f}%" if s is not None else "")
-            )
-        sections = ["\n".join(head), "\n".join(price_lines)]
-
-        if topics:
-            sections.append("Нарративи асосии ҳозира: " + " + ".join(topics[:3]))
-        sections.append(
-            "Хулосаи эҳтимолӣ барои ҳар актив (ин сигнали савдо нест):\n\n"
-            + "\n\n".join(asset_view(a, day) for a in CORE)
-        )
-        if fresh:
-            nl = ["Хабарҳои катализаторӣ (тарҷумаи тоҷикӣ):"]
-            for e, t in zip(fresh, tj):
-                ts = f" · {e['pub']:%H:%M}" if e["pub"] else ""
-                nl.append(f"• [{e['source']}{ts}] {t}")
-            sections.append("\n".join(nl))
-        foot = [f"Тарҷума: {tr.label()}" if fresh else ""]
-        if missing:
-            foot.append("⚠ Манбаъи ғоиб: " + ", ".join(missing))
-        if any(foot):
-            sections.append("\n".join(x for x in foot if x))
-        send_ntfy(
-            os.environ.get("NTFY_TOPIC"),
-            "Macro Catalyst Engine",
-            "\n\n".join(sections),
-            "high" if moves else "default",
-        )
-    else:
-        print("No significant move or new catalyst; skipping alert.")
-
-    seen = dict(sorted(seen.items(), key=lambda kv: kv[1])[-300:])
-    json.dump(
-        {
-            "last_run_utc": now.isoformat(),
-            "prices": {k: v["price"] for k, v in quotes.items()},
-            "last_alert_moves": moves,
-            "active_x_feeds": sorted(x_ok),
-            "seen": seen,
-        },
-        open(STATE_FILE, "w", encoding="utf-8"),
-        indent=2,
-        ensure_ascii=False,
-    )
-
-
-if __name__ == "__main__":
-    main()
+views = {a: asset_view(a, day) for a in CORE}
+                  gem = None
+                  if fresh and gem_key and quota["n"] < GEM_DAILY_CAP:
+                      quota["n"] += 1
+                      try:
+                          facts = {"рӯзона_%": {k: round(v, 2) for k, v in day.items()},
+                                   "хабарҳо": [e["text"][:300] for e in fresh],
+                                   "хулосаи_риёзӣ": {a: views[a][2].strip() for a in CORE}}
+                          gem = gemini_analysis(facts, gem_key)
+                      except Exception as ex:
+                          log("gemini analysis failed:", ex)
+                  blocks = []
+                  for a in CORE:
+                      h, b, bias = views[a]
+                      blocks.append("\n".join([h] + ([gem[a]] if gem else b) + [bias]))
+                  sections.append("Хулосаи эҳтимолӣ (ин сигнали савдо нест) — " +
+                                  ("таҳлил: Gemini" if gem else "таҳлил: ⚠ Fallback (риёзӣ, на Gemini)") + "\n\n" + "\n\n".join(blocks))
+                  if fresh:
+                      nl = ["Хабарҳои катализаторӣ (тарҷумаи тоҷикӣ):"]
+                      for e, t in zip(fresh, tj):
+                          ts = f" · {e['pub']:%H:%M}" if e["pub"] else ""
+                          nl.append(f"• [{e['source']}{ts}] {t}")
+                      sections.append("\n".join(nl))
+                  foot = ([f"Тарҷума: {tr_label}"] if fresh else []) + (["⚠ Манбаъи ғоиб: " + ", ".join(missing)] if missing else [])
+                  if foot:
+                      sections.append("\n".join(foot))
+                  send_ntfy(os.environ.get("NTFY_TOPIC"), "Macro Catalyst Engine", "\n\n".join(sections),
+                            "high" if moves else "default")
+              else:
+                  print("No significant move or new catalyst; skipping alert.")
+
+              seen = dict(sorted(seen.items(), key=lambda kv: kv[1])[-300:])
+              json.dump({"last_run_utc": now.isoformat(), "prices": {k: v["price"] for k, v in quotes.items()},
+                         "last_alert_moves": moves, "active_x_feeds": sorted(x_ok), "seen": seen,
+                         "hist": hist, "quota": quota},
+                        open(STATE_FILE, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+
+
+          def main():
+              """Ҳеҷ гоҳ workflow-ро сурх намекунад: хаторо сабт мекунад ва (ҳадди аксар 1 бор дар 3 соат) ба ntfy мефиристад."""
+              try:
+                  run()
+              except Exception as e:
+                  traceback.print_exc()
+                  try:
+                      os.makedirs("state", exist_ok=True)
+                      mark = "state/last_error.txt"
+                      last = float(open(mark).read()) if os.path.exists(mark) else 0
+                      if time.time() - last > 3 * 3600:
+                          send_ntfy(os.environ.get("NTFY_TOPIC"), "Macro Radar ERROR",
+                                    f"⚠ Радар хато дод: {type(e).name}: {str(e)[:200]}", "default")
+                          open(mark, "w").write(str(time.time()))
+                  except Exception:
+                      pass
+
+
+          if name == "main":
+              main()
+          EOF
+
+      - name: Commit updated state
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/ || true
+          if git diff --staged --quiet; then
+            echo "No state changes to commit."
+            exit 0
+          fi
+          git commit -m "Update state [skip ci]"
+          for i in 1 2 3; do
+            if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((i * 3))
+          done
+          echo "push failed (non-fatal)"
+          exit 0
