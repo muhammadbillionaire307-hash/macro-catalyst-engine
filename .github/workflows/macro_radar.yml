@@ -89,21 +89,82 @@ jobs:
               ("Тилло, нафт ва индексҳо", ["gold", "xau", "nasdaq", "s&p", "sp500", "oil", "crude", "opec", "stocks", "equities"]),
           ]
 
-          term_map = [
-              (r"\btariffs?\b", "тариф(ҳо)"),
-              (r"\bfed\b|\bfomc\b", "ФРС"),
+          phrase_patterns = [
+              (r"\b(.+?)\s+end(?:s)?\s+higher\s+as\s+(.+)", r"\1 дар поёни савдо бо сабаби \2 боло рафт"),
+              (r"\b(.+?)\s+end(?:s)?\s+lower\s+as\s+(.+)", r"\1 дар поёни савдо бо сабаби \2 поин рафт"),
+              (r"\b(.+?)\s+higher\s+at\s+close\s+of\s+trade\b", r"\1 ҳангоми басташавии савдо боло рафт"),
+              (r"\b(.+?)\s+lower\s+at\s+close\s+of\s+trade\b", r"\1 ҳангоми басташавии савдо поин рафт"),
+              (r"\b(.+?)\s+urges?\s+(.+?)\s+to\s+crack\s+down\s+on\s+(.+)", r"\1 аз \2 даъват кард, ки бар зидди \3 чораҳои қатъӣ бинад"),
+              (r"\b(.+?)\s+urges?\s+(.+?)\s+to\s+(.+)", r"\1 аз \2 даъват кард, ки \3"),
+              (r"\bwrestle\s+over\s+(.+?),\s*(.+?),\s*as\s+(.+?)\s+focuses\s+minds\b", r"баҳсҳо бар сари \1 ва \2 дар ҳоле идома доранд, ки \3 таваҷҷуҳро ба худ ҷалб кардааст"),
+              (r"\bwrestle\s+over\s+(.+)", r"баҳсҳои шадид бар сари \1 идома доранд"),
+              (r"\bthanksgiving\s+lull\s+offer(?:s)?\s+relief\b", r"оромии муваққатии рӯзи Шукргузорӣ сабукӣ овард"),
+              (r"\bbenign\s+u\.?s\.?\s+tariffs?\b", r"тарифҳои нисбатан сабуки ИМА"),
+              (r"\btariff\s+dodging\b", r"саркашӣ аз пардохти тарифҳо"),
+              (r"\bguards-linked\s+basij\s+volunteers\b", r"ихтиёриёни Басиҷи вобаста ба Сипоҳ"),
+              (r"\bbroaden\s+social\s+reach\b", r"доираи фаъолияти иҷтимоиро васеътар кунанд"),
+              (r"\bsupreme\s+leader\b", r"раҳбари олӣ"),
+          ]
+
+          word_map = [
+              (r"\bunited\s+kingdom\s+100\b|\bftse\s*100\b", "индекси FTSE 100-и Бритониё"),
+              (r"\bu\.?k\.?\b|\bbritain\b|\bbritish\b", "Бритониё"),
+              (r"\bu\.?s\.?\b|\bunited\s+states\b|\bamerica\b|\bamerican\b", "ИМА"),
+              (r"\beuropean\s+stocks\b", "саҳмияҳои аврупоӣ"),
+              (r"\beuropean\b|\beu\b", "Аврупо"),
+              (r"\bmexico\b", "Мексика"),
+              (r"\basian\s+trade\s+partners\b", "шарикони тиҷоратии осиёӣ"),
+              (r"\bash?ia\b|\basian\b", "Осиё"),
+              (r"\bchina\b|\bchinese\b", "Чин"),
+              (r"\biran\b|\biranian\b", "Эрон"),
+              (r"\bisrael\b|\bisraeli\b", "Исроил"),
+              (r"\brussia\b|\brussian\b", "Русия"),
+              (r"\bukraine\b|\bukrainian\b", "Украина"),
+              (r"\btrump\b", "Трамп"),
               (r"\bpowell\b", "Пауэлл"),
-              (r"\binflation\b|\bcpi\b|\bpce\b", "таваррум"),
-              (r"\byields?\b|\btreasury\b", "даромаднокии вомбаргҳо"),
+              (r"\bfed\b|\bfomc\b", "ФРС"),
+              (r"\ble\s+pen\b", "Ле Пен"),
+              (r"\btariffs?\b", "тарифҳо"),
+              (r"\bbudget\b", "буҷет"),
+              (r"\bfinancing\b", "маблағгузорӣ"),
+              (r"\bleaders?\b", "роҳбарон"),
+              (r"\bcentral\s+bank\b", "бонки марказӣ"),
+              (r"\binterest\s+rates?\b|\brates?\b", "фоизҳои баҳра"),
+              (r"\binflation\b", "таваррум"),
+              (r"\bcpi\b", "ИХИ (CPI)"),
+              (r"\bpce\b", "PCE"),
+              (r"\bnfp\b|\bnonfarm\s+payrolls?\b", "омори шуғл (NFP)"),
+              (r"\bunemployment\b", "бекорӣ"),
+              (r"\bjobs?\b", "ҷойҳои корӣ"),
+              (r"\bgdp\b", "ММД (GDP)"),
+              (r"\brecession\b", "рукӯди иқтисодӣ"),
+              (r"\btreasury\b|\btreasuries\b", "вомбаргҳои хазинадорӣ"),
+              (r"\byields?\b", "даромаднокӣ"),
               (r"\bdollar\b|\bdxy\b", "доллар"),
               (r"\bgold\b|\bxau\b", "тилло"),
               (r"\bnasdaq\b|\bnas100\b", "Nasdaq"),
-              (r"\bs&p\b|\bspx500\b|\bstocks?\b|\bequities?\b", "бозори саҳмия"),
-              (r"\boil\b|\bcrude\b|\bopec\b", "нафт"),
-              (r"\bwar\b|\bgeopolitical\b", "геосиёсат"),
-              (r"\beuropean\b|\beu\b", "Аврупо"),
-              (r"\bchina\b", "Чин"),
-              (r"\bmexico\b", "Мексика"),
+              (r"\bs&p\s*500\b|\bs&p\b|\bspx500\b", "S&P 500"),
+              (r"\bstocks?\b|\bequities?\b", "саҳмияҳо"),
+              (r"\boil\b|\bcrude\b", "нафт"),
+              (r"\bopec\b", "ОПЕК"),
+              (r"\bwar\b", "ҷанг"),
+              (r"\bgeopolitical\b", "геосиёсӣ"),
+              (r"\btrade\b", "тиҷорат"),
+              (r"\bmarket(?:s)?\b", "бозор"),
+              (r"\bhigher\b", "болотар"),
+              (r"\blower\b", "поинтар"),
+              (r"\brise(?:s|d|ing)?\b|\bgain(?:s|ed|ing)?\b", "афзоиш ёфт"),
+              (r"\bfall(?:s|ed|ing)?\b|\bdrop(?:s|ped|ping)?\b|\bdecline(?:s|d|ing)?\b", "коҳиш ёфт"),
+              (r"\bcut(?:s|ting)?\b", "коҳиш дод"),
+              (r"\bhike(?:s|d|ing)?\b|\braise(?:s|d|ing)?\b", "боло бурд"),
+              (r"\band\b", "ва"),
+              (r"\bof\b", "аз"),
+              (r"\bin\b", "дар"),
+              (r"\bon\b", "бар"),
+              (r"\bto\b", "ба"),
+              (r"\bfor\b", "барои"),
+              (r"\bwith\b", "бо"),
+              (r"\bfrom\b", "аз"),
           ]
 
           all_keywords = [kw for _, kws in topic_rules for kw in kws]
@@ -155,15 +216,24 @@ jobs:
                       return tj_topic
               return "Контексти умумии бозор"
 
-          def tj_digest(raw_text):
-              low = raw_text.lower()
-              matched = []
-              for pat, tj_word in term_map:
-                  if re.search(pat, low) and tj_word not in matched:
-                      matched.append(tj_word)
-              focus_str = ", ".join(matched[:4]) if matched else "ҳаракати бозор ва макро"
-              short_orig = raw_text if len(raw_text) <= 115 else raw_text[:112].rstrip() + "..."
-              return f"Мавзӯъ: {focus_str} | Асл: {short_orig}"
+          def translate_to_tajik(raw_text):
+              txt = re.sub(r"\s*[-—|]\s*Investing\.com.*$", "", raw_text, flags=re.I).strip()
+              low = txt.lower()
+
+              for pat, repl in phrase_patterns:
+                  if re.search(pat, low):
+                      txt = re.sub(pat, repl, txt, flags=re.I)
+                      break
+
+              for pat, tj_repl in word_map:
+                  txt = re.sub(pat, tj_repl, txt, flags=re.I)
+
+              txt = re.sub(r"\s+,", ",", txt)
+              txt = re.sub(r",\s*,+", ", ", txt)
+              txt = re.sub(r"\s+", " ", txt).strip(" ,;-")
+              if txt:
+                  txt = txt[0].upper() + txt[1:]
+              return txt[:220]
 
           current_prices = {}
           for label, ticker in all_symbols.items():
@@ -245,7 +315,7 @@ jobs:
                       detected_topics.append(t_name)
                   fresh_relevant_news.append({
                       "source": entry["source"],
-                      "digest": tj_digest(entry["text"]),
+                      "tj_text": translate_to_tajik(entry["text"]),
                   })
                   seen_ids.append(entry["id"])
                   seen_set.add(entry["id"])
@@ -265,7 +335,7 @@ jobs:
               topic = os.environ.get("NTFY_TOPIC", "macro_radar_muhammad_7721")
               parts = []
               if is_first_run:
-                  parts.append("Ҳолати аввалия + Контексти тоҷикӣ")
+                  parts.append("Ҳолати аввалия + Тарҷумаи тоҷикӣ")
               elif has_move:
                   parts.append("Ҳушдори ҳаракат: " + ", ".join(significant_moves))
               else:
@@ -279,9 +349,9 @@ jobs:
                   parts.append("Таъсир ба XAUUSD / NAS100 / SPX500: доллар, фоизҳо ва хатарро бо назардошти ҳаракати нарх таҳлил кунед.")
 
               if fresh_relevant_news:
-                  parts.append("\nХабарҳои катализаторӣ:")
+                  parts.append("\nХабарҳои катализаторӣ (бо тарҷумаи тоҷикӣ):")
                   for n in fresh_relevant_news:
-                      parts.append(f"• [{n['source']}] {n['digest']}")
+                      parts.append(f"• [{n['source']}] {n['tj_text']}")
 
               body = "\n".join(parts)[:3800]
               ntfy_req = urllib.request.Request(
