@@ -1,8 +1,12 @@
 {
-  "last_run_utc": "2026-11-26 18:24 UTC",
+  "last_run_utc": "2026-11-26 18:37 UTC",
   "prices": {
-    "XAUUSD": 3594.0,
+    "XAUUSD": 3596.1,
     "NAS100": 26221.25,
-    "SPX500": 7182.78
-  }
+    "SPX500": 7182.78,
+    "DXY": 103.77,
+    "US10Y": 4.85,
+    "VIX": 26.8
+  },
+  "last_alert_moves": []
 }
