@@ -80,14 +80,33 @@ jobs:
               ("Yahoo Finance", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC=F,NQ=F,^GSPC,DX-Y.NYB&region=US&lang=en-US"),
           ]
 
-          keywords = [
-              "fed", "powell", "fomc", "rate", "rates", "cpi", "pce", "nfp",
-              "jobs", "unemployment", "inflation", "gdp", "treasury", "yield",
-              "yields", "dollar", "dxy", "gold", "xau", "nasdaq", "s&p", "sp500",
-              "oil", "crude", "opec", "tariff", "tariffs", "trump", "china",
-              "war", "iran", "israel", "russia", "ukraine", "geopolitical",
-              "central bank", "ecb", "boe", "boj", "recession", "liquidity"
+          topic_rules = [
+              ("Сиёсати ФРС ва фоизҳо", ["fed", "powell", "fomc", "rate", "rates", "central bank", "ecb", "boe", "boj"]),
+              ("Таваррум ва бозори меҳнат", ["cpi", "pce", "nfp", "jobs", "unemployment", "inflation", "gdp", "recession"]),
+              ("Тарифҳо ва тиҷорати ҷаҳонӣ", ["tariff", "tariffs", "trump", "trade", "china", "mexico", "import", "export"]),
+              ("Геосиёсат ва амният", ["war", "iran", "israel", "russia", "ukraine", "geopolitical", "military", "leader", "eu", "budget"]),
+              ("Доллар ва вомбаргҳо", ["treasury", "yield", "yields", "dollar", "dxy", "liquidity"]),
+              ("Тилло, нафт ва индексҳо", ["gold", "xau", "nasdaq", "s&p", "sp500", "oil", "crude", "opec", "stocks", "equities"]),
           ]
+
+          term_map = [
+              (r"\btariffs?\b", "тариф(ҳо)"),
+              (r"\bfed\b|\bfomc\b", "ФРС"),
+              (r"\bpowell\b", "Пауэлл"),
+              (r"\binflation\b|\bcpi\b|\bpce\b", "таваррум"),
+              (r"\byields?\b|\btreasury\b", "даромаднокии вомбаргҳо"),
+              (r"\bdollar\b|\bdxy\b", "доллар"),
+              (r"\bgold\b|\bxau\b", "тилло"),
+              (r"\bnasdaq\b|\bnas100\b", "Nasdaq"),
+              (r"\bs&p\b|\bspx500\b|\bstocks?\b|\bequities?\b", "бозори саҳмия"),
+              (r"\boil\b|\bcrude\b|\bopec\b", "нафт"),
+              (r"\bwar\b|\bgeopolitical\b", "геосиёсат"),
+              (r"\beuropean\b|\beu\b", "Аврупо"),
+              (r"\bchina\b", "Чин"),
+              (r"\bmexico\b", "Мексика"),
+          ]
+
+          all_keywords = [kw for _, kws in topic_rules for kw in kws]
 
           headers = {
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -130,6 +149,22 @@ jobs:
                   })
               return items
 
+          def classify_topic(text_low):
+              for tj_topic, kws in topic_rules:
+                  if any(k in text_low for k in kws):
+                      return tj_topic
+              return "Контексти умумии бозор"
+
+          def tj_digest(raw_text):
+              low = raw_text.lower()
+              matched = []
+              for pat, tj_word in term_map:
+                  if re.search(pat, low) and tj_word not in matched:
+                      matched.append(tj_word)
+              focus_str = ", ".join(matched[:4]) if matched else "ҳаракати бозор ва макро"
+              short_orig = raw_text if len(raw_text) <= 115 else raw_text[:112].rstrip() + "..."
+              return f"Мавзӯъ: {focus_str} | Асл: {short_orig}"
+
           current_prices = {}
           for label, ticker in all_symbols.items():
               url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker)}?range=1d&interval=15m"
@@ -160,7 +195,7 @@ jobs:
               cur = current_prices.get(label)
               prev = prev_prices.get(label)
               if cur is None:
-                  formatted_lines.append(f"{label}: N/A")
+                  formatted_lines.append(f"{label}: дастрас нест")
                   continue
 
               if isinstance(prev, (int, float)) and prev != 0:
@@ -176,7 +211,6 @@ jobs:
           active_x_sources = []
 
           for handle in x_handles:
-              got_handle = False
               for base in x_rss_bases:
                   feed_url = f"{base}/{handle}/rss"
                   try:
@@ -185,12 +219,9 @@ jobs:
                       if parsed:
                           collected_news.extend(parsed[:5])
                           active_x_sources.append(f"@{handle}")
-                          got_handle = True
                           break
                   except Exception:
                       continue
-              if not got_handle:
-                  pass
 
           if not collected_news:
               for src_name, feed_url in fallback_rss_feeds:
@@ -203,12 +234,19 @@ jobs:
                       continue
 
           fresh_relevant_news = []
+          detected_topics = []
           for entry in collected_news:
               if entry["id"] in seen_set:
                   continue
               low = entry["text"].lower()
-              if any(k in low for k in keywords) or entry["source"].startswith("@"):
-                  fresh_relevant_news.append(entry)
+              if any(k in low for k in all_keywords) or entry["source"].startswith("@"):
+                  t_name = classify_topic(low)
+                  if t_name not in detected_topics:
+                      detected_topics.append(t_name)
+                  fresh_relevant_news.append({
+                      "source": entry["source"],
+                      "digest": tj_digest(entry["text"]),
+                  })
                   seen_ids.append(entry["id"])
                   seen_set.add(entry["id"])
                   if len(fresh_relevant_news) >= 4:
@@ -227,19 +265,23 @@ jobs:
               topic = os.environ.get("NTFY_TOPIC", "macro_radar_muhammad_7721")
               parts = []
               if is_first_run:
-                  parts.append("Initial Snapshot + Narrative Feed")
+                  parts.append("Ҳолати аввалия + Контексти тоҷикӣ")
               elif has_move:
-                  parts.append("Move Alert: " + ", ".join(significant_moves))
+                  parts.append("Ҳушдори ҳаракат: " + ", ".join(significant_moves))
               else:
-                  parts.append("Macro/X Catalyst Update")
+                  parts.append("Навсозии макро ва катализаторҳо")
 
-              parts.append(f"Time: {now_str}")
+              parts.append(f"Вақт: {now_str}")
               parts.extend(formatted_lines)
 
+              if detected_topics:
+                  parts.append("\nНарративи асосии ҳозира: " + " + ".join(detected_topics[:3]))
+                  parts.append("Таъсир ба XAUUSD / NAS100 / SPX500: доллар, фоизҳо ва хатарро бо назардошти ҳаракати нарх таҳлил кунед.")
+
               if fresh_relevant_news:
-                  parts.append("\nCatalysts / Headlines:")
+                  parts.append("\nХабарҳои катализаторӣ:")
                   for n in fresh_relevant_news:
-                      parts.append(f"• [{n['source']}] {n['text']}")
+                      parts.append(f"• [{n['source']}] {n['digest']}")
 
               body = "\n".join(parts)[:3800]
               ntfy_req = urllib.request.Request(
